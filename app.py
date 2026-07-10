@@ -23,8 +23,11 @@ st.caption("Upload one or many Transaction Detail Report CSVs. Each file is anal
            "on its own — group by merchant reference, extract the authorization result "
            "by ics_auth position — and gets its own workbook.")
 
-files = st.file_uploader("Transaction Detail Report(s) — .csv or .zip", type=["csv", "zip"],
+files = st.file_uploader("Transaction Detail Report(s) — .csv, .xlsx or .zip",
+                         type=["csv", "xlsx", "xlsm", "xls", "zip"],
                          accept_multiple_files=True, label_visibility="collapsed")
+
+REPORT_EXTS = (".csv", ".xlsx", ".xlsm", ".xls")
 
 if not files:
     with st.expander("How it works"):
@@ -50,14 +53,14 @@ def expand_inputs(uploads):
             except Exception as e:
                 items.append((f.name, None, f"not a valid zip: {e}"))
                 continue
-            csv_members = [i for i in zf.infolist()
-                           if not i.is_dir()
-                           and i.filename.lower().endswith(".csv")
-                           and not i.filename.startswith("__MACOSX/")
-                           and not os.path.basename(i.filename).startswith("._")]
-            if not csv_members:
-                items.append((f.name, None, "zip contains no .csv files"))
-            for info in csv_members:
+            members = [i for i in zf.infolist()
+                       if not i.is_dir()
+                       and i.filename.lower().endswith(REPORT_EXTS)
+                       and not i.filename.startswith("__MACOSX/")
+                       and not os.path.basename(i.filename).startswith("._")]
+            if not members:
+                items.append((f.name, None, "zip contains no .csv/.xlsx report files"))
+            for info in members:
                 items.append((f"{f.name} → {os.path.basename(info.filename)}",
                               zf.read(info), None))
         else:

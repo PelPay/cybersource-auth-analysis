@@ -8,7 +8,7 @@ authorization-response analysis workbook.
 | File | Purpose |
 |------|---------|
 | `analysis_core.py` | Core engine — importable, no I/O globals: `load_rows`, `analyze`, `build_workbook`, `run` |
-| `app.py` | Streamlit UI — **batch upload** one or many CSVs; each analysed independently; preview + download individual `.xlsx` or all as a ZIP |
+| `app.py` | Streamlit UI — **batch upload** one or many reports as **`.csv` / `.xlsx`**, or **`.zip`** archives of them; each analysed independently; preview + download individual `.xlsx` or all as a ZIP |
 | `requirements.txt` | `streamlit`, `openpyxl` |
 
 ## Quick start

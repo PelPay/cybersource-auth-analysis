@@ -47,22 +47,44 @@ def _parse_msg(raw):
     return [p.replace(_SENT, ",") for p in s.split(",")]
 
 
+def _rows_from_xlsx(data):
+    """Read the first worksheet of an .xlsx into a list of string-cell rows."""
+    wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    out = []
+    for row in ws.iter_rows(values_only=True):
+        out.append(["" if c is None else str(c) for c in row])
+    wb.close()
+    return out
+
+
+def _rows_from_csv_text(text):
+    return [r for r in csv.reader(io.StringIO(text))]
+
+
 def load_rows(source):
-    """Load a CyberSource Transaction Detail Report.
+    """Load a CyberSource Transaction Detail Report (CSV or XLSX).
 
     `source` is a filesystem path (str) or the raw file bytes (from an upload).
+    File type is detected by content (XLSX begins with the ZIP signature 'PK'),
+    so bytes from either a loose upload or a ZIP member work regardless of name.
     Skips any leading metadata rows and locates the true header row (the one
-    containing merchant_ref_number / ics_applications). Returns (idx, rows) where
-    idx maps column name -> position and rows is a list of non-empty data rows.
+    containing merchant_ref_number / ics_applications). Returns (idx, rows).
     """
     if isinstance(source, (bytes, bytearray)):
-        text = source.decode("utf-8-sig", errors="replace")
+        b = bytes(source)
     else:
-        with open(source, "r", encoding="utf-8-sig", errors="replace", newline="") as fh:
-            text = fh.read()
+        with open(source, "rb") as fh:
+            b = fh.read()
 
-    reader = csv.reader(io.StringIO(text))
-    all_rows = [r for r in reader]
+    if b[:4] == b"PK\x03\x04":                       # .xlsx / .xlsm (zip container)
+        all_rows = _rows_from_xlsx(b)
+    elif b[:4] == b"\xd0\xcf\x11\xe0":               # legacy .xls (OLE) — unsupported
+        raise ValueError("Legacy .xls files are not supported — "
+                         "please save the report as .xlsx or .csv.")
+    else:                                            # CSV / plain text
+        all_rows = _rows_from_csv_text(b.decode("utf-8-sig", errors="replace"))
+
     header_i = None
     for i, r in enumerate(all_rows[:15]):
         low = [c.strip().lower() for c in r]
