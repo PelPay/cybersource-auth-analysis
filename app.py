@@ -23,15 +23,15 @@ st.caption("Upload one or many Transaction Detail Report CSVs. Each file is anal
            "on its own — group by merchant reference, extract the authorization result "
            "by ics_auth position — and gets its own workbook.")
 
-files = st.file_uploader("Transaction Detail Report(s) (.csv)", type=["csv"],
+files = st.file_uploader("Transaction Detail Report(s) — .csv or .zip", type=["csv", "zip"],
                          accept_multiple_files=True, label_visibility="collapsed")
 
 if not files:
     with st.expander("How it works"):
         st.markdown(
-            "1. **Upload** one or more raw CyberSource Transaction Detail Report CSVs "
-            "(drag several in at once).\n"
-            "2. Each file is processed **independently** — rows grouped by "
+            "1. **Upload** one or more raw CyberSource Transaction Detail Report CSVs — "
+            "or drop in **`.zip`** archives of CSVs (or a mix). Every CSV inside is unpacked.\n"
+            "2. Each CSV is processed **independently** — rows grouped by "
             "`merchant_ref_number`, only `ics_auth` transactions kept, the authorization "
             "code/flag/description read from the `ics_auth` position.\n"
             "3. You get a **batch summary** with a reconciliation check per file, a "
@@ -39,20 +39,57 @@ if not files:
         )
     st.stop()
 
-# ---- Analyse every file independently ----
+
+def expand_inputs(uploads):
+    """Flatten uploads into (display_name, csv_bytes, error) — unpacking any .zip."""
+    items = []
+    for f in uploads:
+        if f.name.lower().endswith(".zip"):
+            try:
+                zf = zipfile.ZipFile(BytesIO(f.getvalue()))
+            except Exception as e:
+                items.append((f.name, None, f"not a valid zip: {e}"))
+                continue
+            csv_members = [i for i in zf.infolist()
+                           if not i.is_dir()
+                           and i.filename.lower().endswith(".csv")
+                           and not i.filename.startswith("__MACOSX/")
+                           and not os.path.basename(i.filename).startswith("._")]
+            if not csv_members:
+                items.append((f.name, None, "zip contains no .csv files"))
+            for info in csv_members:
+                items.append((f"{f.name} → {os.path.basename(info.filename)}",
+                              zf.read(info), None))
+        else:
+            items.append((f.name, f.getvalue(), None))
+    return items
+
+
+inputs = expand_inputs(files)
+
+# ---- Analyse every CSV independently ----
 results = []
-for f in files:
+for name, data, err in inputs:
+    if err:
+        results.append({"name": name, "a": None, "xlsx": None, "error": err})
+        continue
     try:
-        idx, rows = load_rows(f.getvalue())
+        idx, rows = load_rows(data)
         a = analyze(idx, rows)
         bio = BytesIO()
         build_workbook(a, bio, top_n=5)
-        results.append({"name": f.name, "a": a, "xlsx": bio.getvalue(), "error": None})
+        results.append({"name": name, "a": a, "xlsx": bio.getvalue(), "error": None})
     except Exception as e:
-        results.append({"name": f.name, "a": None, "xlsx": None, "error": str(e)})
+        results.append({"name": name, "a": None, "xlsx": None, "error": str(e)})
+
+def out_base(display):
+    """Output basename for a workbook, stripping any 'zip → member.csv' decoration."""
+    part = display.split(" → ")[-1]
+    return os.path.splitext(os.path.basename(part))[0]
+
 
 # ---- Batch summary ----
-st.subheader(f"Batch summary — {len(files)} file(s)")
+st.subheader(f"Batch summary — {len(results)} CSV file(s)")
 summary_tbl = []
 for r in results:
     if r["error"]:
@@ -86,7 +123,7 @@ if ok:
     with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as z:
         used = {}
         for r in ok:
-            base = os.path.splitext(os.path.basename(r["name"]))[0]
+            base = out_base(r["name"])
             name = f"{base}_analysis.xlsx"
             # avoid collisions if two uploads share a base name
             n = used.get(name, 0)
@@ -145,10 +182,9 @@ if ok:
     } for (code, desc), n in items]
     st.dataframe(table, use_container_width=True)
 
-    base = os.path.splitext(os.path.basename(r["name"]))[0]
     st.download_button(
         "Download this workbook (.xlsx)",
         data=r["xlsx"],
-        file_name=f"{base}_analysis.xlsx",
+        file_name=f"{out_base(r['name'])}_analysis.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
