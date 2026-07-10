@@ -229,6 +229,31 @@ def build_workbook(a, out_path, top_n=5):
     for col, w in (("A", 34), ("B", 16), ("C", 16), ("D", 20), ("E", 54)):
         wsa.column_dimensions[col].width = w
 
+    # Optional audit summaries — global counts across all authorization attempts
+    total_auth = len(a["auth_records"])
+
+    def audit_sheet(title, label, keyfn, empty_label, width_b=54):
+        ws_ = wb.create_sheet(title)
+        hrow(ws_, 1, [label, "number", "percentage_of_total"])
+        counts = Counter(keyfn(rec) or empty_label for rec in a["auth_records"])
+        rr = 2
+        for key, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+            ws_.cell(rr, 1, key); ws_.cell(rr, 2, n)
+            cell = ws_.cell(rr, 3, (n / total_auth if total_auth else 0)); cell.number_format = PCT
+            rr += 1
+        ws_.cell(rr, 1, "TOTAL").font = Font(bold=True)
+        ws_.cell(rr, 2, sum(counts.values())).font = Font(bold=True)
+        ws_.column_dimensions["A"].width = width_b
+        ws_.column_dimensions["B"].width = 10
+        ws_.column_dimensions["C"].width = 20
+
+    audit_sheet("Auth Code Summary", "response_code",
+                lambda r: r["code"], "(none)", width_b=16)
+    audit_sheet("Auth Flag Summary", "response_flag",
+                lambda r: r["flag"], "(none)", width_b=24)
+    audit_sheet("Auth Message Summary", "response_description",
+                lambda r: r["desc"], "(no authorization response returned)", width_b=54)
+
     # Raw Data Summary
     ws = wb.create_sheet("Raw Data Summary")
     cols, body, total = _summary_rows(a, top_n)
