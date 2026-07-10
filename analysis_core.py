@@ -213,6 +213,22 @@ def build_workbook(a, out_path, top_n=5):
     for col, w in (("A", 16), ("B", 54), ("C", 10), ("D", 20)):
         ws2.column_dimensions[col].width = w
 
+    # Authorization Attempts (intermediate dataset — one row per auth-attempt ref)
+    wsa = wb.create_sheet("Authorization Attempts")
+    acols = ["merchant_ref_number", "merchant_id", "response_code",
+             "response_flag", "response_description"]
+    hrow(wsa, 1, acols)
+    ar = 2
+    for rec in sorted(a["auth_records"], key=lambda x: (x["merchant_id"], x["ref"])):
+        wsa.cell(ar, 1, rec["ref"])
+        wsa.cell(ar, 2, rec["merchant_id"])
+        wsa.cell(ar, 3, rec["code"] if rec["code"] else "(none)")
+        wsa.cell(ar, 4, rec["flag"] if rec["flag"] else "(none)")
+        wsa.cell(ar, 5, rec["desc"] if rec["desc"] else "(no authorization response returned)")
+        ar += 1
+    for col, w in (("A", 34), ("B", 16), ("C", 16), ("D", 20), ("E", 54)):
+        wsa.column_dimensions[col].width = w
+
     # Raw Data Summary
     ws = wb.create_sheet("Raw Data Summary")
     cols, body, total = _summary_rows(a, top_n)
@@ -229,6 +245,51 @@ def build_workbook(a, out_path, top_n=5):
             cell.number_format = PCT
     for c in range(1, len(cols) + 1):
         ws.column_dimensions[get_column_letter(c)].width = 20 if c == 1 else 16
+
+    # Methodology (instructions embedded in the workbook)
+    wsm = wb.create_sheet("Methodology")
+    wsm.column_dimensions["A"].width = 110
+    from openpyxl.styles import Alignment
+    lines = [
+        ("CyberSource Merchant Authorization-Response Analysis", MHDR),
+        ("", None),
+        ("Objective", Font(bold=True, size=12)),
+        ("For each merchant, what authorization responses did they receive, how many times did each "
+         "occur, and what percentage of that merchant's authorization attempts does each represent?", None),
+        ("", None),
+        ("Method", Font(bold=True, size=12)),
+        ("1. Group raw report rows by merchant_ref_number (one customer transaction each). "
+         "request_id is NOT used as the grouping key.", None),
+        ("2. Keep only transactions where ics_applications contains 'ics_auth' (order ignored). "
+         "One row per unique merchant_ref_number forms the intermediate authorization dataset.", None),
+        ("3. Locate the position of 'ics_auth' inside the comma-separated ics_applications list, "
+         "then read the authorization result from that same position of ics_rcode (response_code), "
+         "ics_rflag (response_flag) and ics_rmsg (response_description).", None),
+        ("4. Response descriptions that contain internal commas are protected before splitting so a "
+         "single message is never torn across positions. Every row's message count is validated "
+         "against ics_rcode.", None),
+        ("5. Group the intermediate records by merchant_id, then by response_code + "
+         "response_description. number = count; percentage_of_total = number / that merchant's total "
+         "authorization attempts.", None),
+        ("", None),
+        ("Sheets", Font(bold=True, size=12)),
+        ("Merchant Response Tables  -  one table per merchant_id (required deliverable).", None),
+        ("Raw Data Summary  -  per-merchant reconciliation; first five merchants by raw volume plus a "
+         "TOTAL computed from all merchants (required).", None),
+        ("Authorization Attempts  -  the intermediate one-row-per-ref dataset (supporting).", None),
+        ("", None),
+        ("Reconciliation", Font(bold=True, size=12)),
+        ("auth_attempt_transactions in Raw Data Summary equals each merchant's Total authorization "
+         "attempts in Merchant Response Tables; the TOTAL row equals the number of rows on the "
+         "Authorization Attempts sheet.", None),
+    ]
+    rr = 1
+    for text, font in lines:
+        cell = wsm.cell(rr, 1, text)
+        if font:
+            cell.font = font
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+        rr += 1
 
     wb.save(out_path)
     return out_path
