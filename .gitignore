@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.xlsx
+*.csv
+dist/
+*.egg-info/
+.env
+.venv/
+venv/

@@ -1,0 +1,2 @@
+streamlit>=1.59.0
+openpyxl>=3.0.0

@@ -1,0 +1,248 @@
+"""
+CyberSource merchant authorization-response analysis — core logic.
+
+Pure functions, no Streamlit imports. Given a raw CyberSource Transaction Detail
+Report (CSV), produce the merchant-level authorization response analysis and a
+formatted Excel workbook.
+
+Public entry points:
+    load_rows(source)      -> (idx, rows)     source = path str or bytes
+    analyze(idx, rows)     -> dict            all computed structures + metrics
+    build_workbook(a, out) -> out             writes the .xlsx
+    run(source, out)       -> dict            load + analyze + build; returns summary
+"""
+import csv, io
+from collections import defaultdict, Counter, OrderedDict
+import openpyxl
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
+
+# The only CyberSource ics_rmsg values that contain internal commas. They are
+# protected before comma-splitting so a single response description is never torn
+# into multiple positions. Extend this list if new comma-bearing messages appear.
+KNOWN_COMMA_MSGS = [
+    "Negative CAM, dCVV, iCVV, or CVV results",
+    "We encountered a Payer Authentication problem: Transaction Lookup Not Successful, Check Transaction Id",
+    "Lost card, pick up (fraud account)",
+]
+_SENT = "\x01"
+
+REQUIRED_COLS = ["merchant_ref_number", "merchant_id", "ics_applications",
+                 "ics_rcode", "ics_rflag", "ics_rmsg"]
+
+
+def _split_apps(v):
+    return [x.strip() for x in v.split(",")] if v else [""]
+
+
+def _split_plain(v):
+    return v.split(",") if v is not None else [""]
+
+
+def _parse_msg(raw):
+    s = raw if raw is not None else ""
+    for m in KNOWN_COMMA_MSGS:
+        if m in s:
+            s = s.replace(m, m.replace(",", _SENT))
+    return [p.replace(_SENT, ",") for p in s.split(",")]
+
+
+def load_rows(source):
+    """Load a CyberSource Transaction Detail Report.
+
+    `source` is a filesystem path (str) or the raw file bytes (from an upload).
+    Skips any leading metadata rows and locates the true header row (the one
+    containing merchant_ref_number / ics_applications). Returns (idx, rows) where
+    idx maps column name -> position and rows is a list of non-empty data rows.
+    """
+    if isinstance(source, (bytes, bytearray)):
+        text = source.decode("utf-8-sig", errors="replace")
+    else:
+        with open(source, "r", encoding="utf-8-sig", errors="replace", newline="") as fh:
+            text = fh.read()
+
+    reader = csv.reader(io.StringIO(text))
+    all_rows = [r for r in reader]
+    header_i = None
+    for i, r in enumerate(all_rows[:15]):
+        low = [c.strip().lower() for c in r]
+        if "merchant_ref_number" in low and "ics_applications" in low:
+            header_i = i
+            break
+    if header_i is None:
+        raise ValueError("Could not find a header row containing "
+                         "merchant_ref_number and ics_applications.")
+
+    header = all_rows[header_i]
+    idx = {h: i for i, h in enumerate(header)}
+    missing = [c for c in REQUIRED_COLS if c not in idx]
+    if missing:
+        raise ValueError("Report is missing required columns: " + ", ".join(missing))
+
+    rows = [r for r in all_rows[header_i + 1:] if r and any(c.strip() for c in r)]
+    return idx, rows
+
+
+def analyze(idx, rows):
+    """Run the 5-step analysis. Returns a dict of all computed structures."""
+    C_REF, C_MID = idx["merchant_ref_number"], idx["merchant_id"]
+    C_APP, C_RC, C_RF, C_RM = (idx["ics_applications"], idx["ics_rcode"],
+                               idx["ics_rflag"], idx["ics_rmsg"])
+
+    # Step 1: group raw rows by merchant_ref_number (one group == one customer txn)
+    groups = OrderedDict()
+    for i, row in enumerate(rows):
+        groups.setdefault(row[C_REF], []).append(i)
+
+    # Steps 2-3: keep refs that attempted ics_auth; extract result by position
+    auth_records = []
+    align_fail = []
+    for ref, ridx in groups.items():
+        auth_row = next((i for i in ridx if "ics_auth" in _split_apps(rows[i][C_APP])), None)
+        if auth_row is None:
+            continue
+        row = rows[auth_row]
+        apps = _split_apps(row[C_APP]); N = len(apps)
+        pos = apps.index("ics_auth")
+        rcode = _split_plain(row[C_RC]); rflag = _split_plain(row[C_RF]); rmsg = _parse_msg(row[C_RM])
+        if not (len(rcode) == N and len(rflag) == N and len(rmsg) == N):
+            align_fail.append({"ref": ref, "N": N, "rcode": len(rcode),
+                               "rflag": len(rflag), "rmsg": len(rmsg), "raw_rmsg": row[C_RM]})
+
+        def at(lst):
+            return (lst[pos] if pos < len(lst) else "").strip()
+
+        auth_records.append({"ref": ref, "merchant_id": row[C_MID],
+                             "code": at(rcode), "flag": at(rflag), "desc": at(rmsg)})
+
+    # Step 5: group by merchant_id then by (code, description)
+    by_merch = defaultdict(Counter)
+    merch_total = Counter()
+    for rec in auth_records:
+        by_merch[rec["merchant_id"]][(rec["code"], rec["desc"])] += 1
+        merch_total[rec["merchant_id"]] += 1
+
+    # Raw Data Summary metrics
+    ref_merch = {ref: rows[ridx[0]][C_MID] for ref, ridx in groups.items()}
+    ref_has_auth = {ref: any("ics_auth" in _split_apps(rows[i][C_APP]) for i in ridx)
+                    for ref, ridx in groups.items()}
+    raw_per_merch = Counter(row[C_MID] for row in rows)
+
+    summ = defaultdict(lambda: dict(total_raw=0, uniq=set(), auth_ref=set(), nonauth_ref=set(),
+                                    raw_in_auth=0, raw_in_nonauth=0, raw_has_auth=0, raw_no_auth=0))
+    for ref, ridx in groups.items():
+        d = summ[ref_merch[ref]]
+        d["uniq"].add(ref)
+        (d["auth_ref"] if ref_has_auth[ref] else d["nonauth_ref"]).add(ref)
+        for i in ridx:
+            d["total_raw"] += 1
+            if ref_has_auth[ref]:
+                d["raw_in_auth"] += 1
+            else:
+                d["raw_in_nonauth"] += 1
+            if "ics_auth" in _split_apps(rows[i][C_APP]):
+                d["raw_has_auth"] += 1
+            else:
+                d["raw_no_auth"] += 1
+
+    order = [m for m, _ in raw_per_merch.most_common()]  # merchants by raw volume desc
+    return {
+        "auth_records": auth_records, "align_fail": align_fail,
+        "by_merch": by_merch, "merch_total": merch_total,
+        "summ": summ, "order": order,
+        "n_rows": len(rows), "n_unique_ref": len(groups),
+        "n_auth": len(auth_records),
+    }
+
+
+def _summary_rows(a, top_n=5):
+    """Return (header, body_rows, total_row) for the Raw Data Summary sheet."""
+    cols = ["merchant_id", "total_raw_entries", "Unique Transactions", "auth_attempt_transactions",
+            "non_auth_transactions", "raw_entries_in_auth_transactions",
+            "raw_entries_in_non_auth_transactions", "raw_rows_containing_ics_auth",
+            "raw_rows_without_ics_auth", "auth_attempt_transaction_percentage",
+            "non_auth_transaction_percentage"]
+
+    def mrow(mid, d):
+        uniq, auth, non = len(d["uniq"]), len(d["auth_ref"]), len(d["nonauth_ref"])
+        return [mid, d["total_raw"], uniq, auth, non, d["raw_in_auth"], d["raw_in_nonauth"],
+                d["raw_has_auth"], d["raw_no_auth"],
+                (auth / uniq if uniq else 0), (non / uniq if uniq else 0)]
+
+    body = [mrow(mid, a["summ"][mid]) for mid in a["order"][:top_n]]
+
+    T = Counter()
+    for d in a["summ"].values():
+        T["total_raw"] += d["total_raw"]; T["uniq"] += len(d["uniq"]); T["auth"] += len(d["auth_ref"])
+        T["non"] += len(d["nonauth_ref"]); T["ria"] += d["raw_in_auth"]; T["rina"] += d["raw_in_nonauth"]
+        T["rha"] += d["raw_has_auth"]; T["rna"] += d["raw_no_auth"]
+    total = ["TOTAL", T["total_raw"], T["uniq"], T["auth"], T["non"], T["ria"], T["rina"],
+             T["rha"], T["rna"],
+             (T["auth"] / T["uniq"] if T["uniq"] else 0), (T["non"] / T["uniq"] if T["uniq"] else 0)]
+    return cols, body, total
+
+
+def build_workbook(a, out_path, top_n=5):
+    HDR = PatternFill("solid", fgColor="1F4E78")
+    WHITE = Font(bold=True, color="FFFFFF")
+    MHDR = Font(bold=True, size=12)
+    PCT = "0.00%"
+
+    def hrow(ws, r, cols):
+        for c, v in enumerate(cols, 1):
+            cell = ws.cell(r, c, v); cell.fill = HDR; cell.font = WHITE
+
+    wb = openpyxl.Workbook(); wb.remove(wb.active)
+
+    # Merchant Response Tables (primary sheet)
+    ws2 = wb.create_sheet("Merchant Response Tables")
+    r = 1
+    for mid in sorted(a["by_merch"].keys()):
+        total = a["merch_total"][mid]
+        ws2.cell(r, 1, f"Merchant ID: {mid}").font = MHDR; r += 1
+        ws2.cell(r, 1, f"Total authorization attempts: {total}").font = Font(bold=True); r += 1
+        hrow(ws2, r, ["response_code", "response_description", "number", "percentage_of_total"]); r += 1
+        items = sorted(a["by_merch"][mid].items(), key=lambda kv: (-kv[1], kv[0][0], kv[0][1]))
+        for (code, desc), n in items:
+            ws2.cell(r, 1, code if code else "(none)")
+            ws2.cell(r, 2, desc if desc else "(no authorization response returned)")
+            ws2.cell(r, 3, n)
+            cell = ws2.cell(r, 4, (n / total if total else 0)); cell.number_format = PCT
+            r += 1
+        r += 1
+    for col, w in (("A", 16), ("B", 54), ("C", 10), ("D", 20)):
+        ws2.column_dimensions[col].width = w
+
+    # Raw Data Summary
+    ws = wb.create_sheet("Raw Data Summary")
+    cols, body, total = _summary_rows(a, top_n)
+    r = 1; hrow(ws, r, cols); r += 1
+    for vals in body:
+        for c, v in enumerate(vals, 1):
+            cell = ws.cell(r, c, v)
+            if c in (10, 11):
+                cell.number_format = PCT
+        r += 1
+    for c, v in enumerate(total, 1):
+        cell = ws.cell(r, c, v); cell.font = Font(bold=True)
+        if c in (10, 11):
+            cell.number_format = PCT
+    for c in range(1, len(cols) + 1):
+        ws.column_dimensions[get_column_letter(c)].width = 20 if c == 1 else 16
+
+    wb.save(out_path)
+    return out_path
+
+
+def run(source, out_path, top_n=5):
+    idx, rows = load_rows(source)
+    a = analyze(idx, rows)
+    build_workbook(a, out_path, top_n)
+    return {
+        "output_path": out_path,
+        "rows": a["n_rows"],
+        "unique_transactions": a["n_unique_ref"],
+        "auth_attempts": a["n_auth"],
+        "merchants": sorted(a["by_merch"].keys()),
+        "alignment_failures": len(a["align_fail"]),
+    }
