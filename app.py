@@ -15,7 +15,7 @@ from io import BytesIO
 import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from analysis_core import load_rows, analyze, build_workbook, _summary_rows
+from analysis_core import load_rows, analyze, build_workbook, _summary_rows, date_label
 
 st.set_page_config(page_title="CyberSource Auth Analysis", layout="wide")
 st.title("CyberSource Merchant Authorization-Response Analysis")
@@ -86,9 +86,14 @@ for name, data, err in inputs:
         results.append({"name": name, "a": None, "xlsx": None, "error": str(e)})
 
 def out_base(display):
-    """Output basename for a workbook, stripping any 'zip → member.csv' decoration."""
+    """Fallback basename, stripping any 'zip → member.csv' decoration."""
     part = display.split(" → ")[-1]
     return os.path.splitext(os.path.basename(part))[0]
+
+
+def result_label(r):
+    """Date-range label for a result — falls back to the source filename."""
+    return (r["a"].get("date_label") if r.get("a") else None) or out_base(r["name"])
 
 
 # ---- Batch summary ----
@@ -105,6 +110,7 @@ for r in results:
         reconciles = (sum_auth == a["n_auth"]) and (len(a["align_fail"]) == 0)
         summary_tbl.append({
             "file": r["name"],
+            "date_range": a.get("date_label") or "(no dates found)",
             "status": "OK" if reconciles else "review",
             "rows": a["n_rows"],
             "unique_txns": a["n_unique_ref"],
@@ -126,21 +132,30 @@ if ok:
     with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as z:
         used = {}
         for r in ok:
-            base = out_base(r["name"])
-            name = f"{base}_analysis.xlsx"
-            # avoid collisions if two uploads share a base name
-            n = used.get(name, 0)
-            if n:
-                name = f"{base}_analysis_{n+1}.xlsx"
-            used[f"{base}_analysis.xlsx"] = n + 1
-            z.writestr(name, r["xlsx"])
+            base = result_label(r)
+            # each result in its own subdirectory, named by date range
+            n = used.get(base, 0)
+            used[base] = n + 1
+            suffix = "" if n == 0 else f"_{n+1}"
+            folder = f"{base}{suffix}"
+            fname = f"CyberSource_Auth_Analysis_{base}{suffix}.xlsx"
+            z.writestr(f"{folder}/{fname}", r["xlsx"])
+
+    # name the zip after the overall span covered
+    spans = [r["a"]["date_min"] for r in ok if r["a"].get("date_min")] + \
+            [r["a"]["date_max"] for r in ok if r["a"].get("date_max")]
+    zip_label = date_label(min(spans), max(spans)) if spans else None
+    zip_name = f"CyberSource_Auth_Analyses_{zip_label}.zip" if zip_label else "cybersource_analyses.zip"
+
     st.download_button(
         f"Download all {len(ok)} workbook(s) as ZIP",
         data=zbuf.getvalue(),
-        file_name="cybersource_analyses.zip",
+        file_name=zip_name,
         mime="application/zip",
         type="primary",
     )
+    st.caption(f"Each report lands in its own subdirectory named by its date range — e.g. "
+               f"`{result_label(ok[0])}/CyberSource_Auth_Analysis_{result_label(ok[0])}.xlsx`")
 
 # ---- Per-file preview + individual download ----
 if ok:
@@ -188,6 +203,6 @@ if ok:
     st.download_button(
         "Download this workbook (.xlsx)",
         data=r["xlsx"],
-        file_name=f"{out_base(r['name'])}_analysis.xlsx",
+        file_name=f"CyberSource_Auth_Analysis_{result_label(r)}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )

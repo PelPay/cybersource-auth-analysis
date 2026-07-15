@@ -13,6 +13,7 @@ Public entry points:
 """
 import csv, io
 from collections import defaultdict, Counter, OrderedDict
+from datetime import datetime
 import openpyxl
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -29,6 +30,35 @@ _SENT = "\x01"
 
 REQUIRED_COLS = ["merchant_ref_number", "merchant_id", "ics_applications",
                  "ics_rcode", "ics_rflag", "ics_rmsg"]
+
+
+_DATE_FMTS = ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d",
+              "%m/%d/%Y %H:%M", "%m/%d/%Y", "%d/%m/%Y %H:%M", "%d/%m/%Y")
+
+
+def _parse_date(v):
+    """Parse a report timestamp to a date; None if unparseable."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    for f in _DATE_FMTS:
+        try:
+            return datetime.strptime(s, f).date()
+        except ValueError:
+            pass
+    return None
+
+
+def date_label(date_min, date_max):
+    """Filename-safe label for a report's coverage, e.g. '2026-07-08' or
+    '2026-07-07_to_2026-07-08'. None when no dates could be parsed."""
+    if not date_min or not date_max:
+        return None
+    if date_min == date_max:
+        return date_min.isoformat()
+    return f"{date_min.isoformat()}_to_{date_max.isoformat()}"
 
 
 def _split_apps(v):
@@ -167,6 +197,22 @@ def analyze(idx, rows):
             else:
                 d["raw_no_auth"] += 1
 
+    # Report coverage — derived from the data itself (transaction_date / submit_time_utc)
+    dcol = None
+    for cand in ("transaction_date", "submit_time_utc"):
+        if cand in idx:
+            dcol = idx[cand]
+            break
+    dates = []
+    if dcol is not None:
+        for row in rows:
+            if dcol < len(row):
+                d = _parse_date(row[dcol])
+                if d:
+                    dates.append(d)
+    date_min = min(dates) if dates else None
+    date_max = max(dates) if dates else None
+
     order = [m for m, _ in raw_per_merch.most_common()]  # merchants by raw volume desc
     return {
         "auth_records": auth_records, "align_fail": align_fail,
@@ -174,6 +220,8 @@ def analyze(idx, rows):
         "summ": summ, "order": order,
         "n_rows": len(rows), "n_unique_ref": len(groups),
         "n_auth": len(auth_records),
+        "date_min": date_min, "date_max": date_max,
+        "date_label": date_label(date_min, date_max),
     }
 
 
@@ -353,4 +401,6 @@ def run(source, out_path, top_n=5):
         "auth_attempts": a["n_auth"],
         "merchants": sorted(a["by_merch"].keys()),
         "alignment_failures": len(a["align_fail"]),
+        "date_min": a["date_min"], "date_max": a["date_max"],
+        "date_label": a["date_label"],
     }
