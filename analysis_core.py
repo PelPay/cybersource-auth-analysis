@@ -13,8 +13,13 @@ Public entry points:
 """
 import csv, io
 from collections import defaultdict, Counter, OrderedDict
-from datetime import datetime
+from datetime import datetime, timedelta
 import openpyxl
+
+# Reports are issued with UTC timestamps ('...Z') but the business day is local.
+# Lagos is UTC+1, so a report window of 23:00Z -> 23:00Z is exactly one local day.
+# Change this single constant if the reporting timezone ever differs.
+REPORT_TZ_OFFSET_HOURS = 1
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
@@ -37,7 +42,11 @@ _DATE_FMTS = ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d",
 
 
 def _parse_date(v):
-    """Parse a report timestamp to a date; None if unparseable."""
+    """Parse a report timestamp to its LOCAL business date; None if unparseable.
+
+    Timestamps ending in 'Z' are UTC and are shifted by REPORT_TZ_OFFSET_HOURS so
+    they land on the local business day (a 23:00Z->23:00Z window == one local day).
+    """
     if v is None:
         return None
     s = str(v).strip()
@@ -45,20 +54,42 @@ def _parse_date(v):
         return None
     for f in _DATE_FMTS:
         try:
-            return datetime.strptime(s, f).date()
+            dt = datetime.strptime(s, f)
         except ValueError:
-            pass
+            continue
+        if s.endswith("Z"):
+            dt = dt + timedelta(hours=REPORT_TZ_OFFSET_HOURS)
+        return dt.date()
     return None
 
 
 def date_label(date_min, date_max):
-    """Filename-safe label for a report's coverage, e.g. '2026-07-08' or
-    '2026-07-07_to_2026-07-08'. None when no dates could be parsed."""
+    """ISO label for a report's coverage: '2026-07-08' or '2026-07-07_to_2026-07-08'."""
     if not date_min or not date_max:
         return None
     if date_min == date_max:
         return date_min.isoformat()
     return f"{date_min.isoformat()}_to_{date_max.isoformat()}"
+
+
+def day_range_label(date_min, date_max):
+    """Human filename label for a span of days:
+        one day        -> 'july_8'
+        same month     -> 'july_1-10'
+        across months  -> 'july_20-august_5'
+        across years   -> 'december_28_2026-january_3_2027'
+    """
+    if not date_min or not date_max:
+        return None
+    m1 = date_min.strftime("%B").lower()
+    m2 = date_max.strftime("%B").lower()
+    if date_min == date_max:
+        return f"{m1}_{date_min.day}"
+    if date_min.year != date_max.year:
+        return f"{m1}_{date_min.day}_{date_min.year}-{m2}_{date_max.day}_{date_max.year}"
+    if date_min.month == date_max.month:
+        return f"{m1}_{date_min.day}-{date_max.day}"
+    return f"{m1}_{date_min.day}-{m2}_{date_max.day}"
 
 
 def _split_apps(v):

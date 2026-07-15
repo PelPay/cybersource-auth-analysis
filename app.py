@@ -15,7 +15,8 @@ from io import BytesIO
 import streamlit as st
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from analysis_core import load_rows, analyze, build_workbook, _summary_rows, date_label
+from analysis_core import (load_rows, analyze, build_workbook, _summary_rows,
+                           date_label, day_range_label)
 
 st.set_page_config(page_title="CyberSource Auth Analysis", layout="wide")
 st.title("CyberSource Merchant Authorization-Response Analysis")
@@ -92,8 +93,9 @@ def out_base(display):
 
 
 def result_label(r):
-    """Date-range label for a result — falls back to the source filename."""
-    return (r["a"].get("date_label") if r.get("a") else None) or out_base(r["name"])
+    """Human day label for a result (e.g. 'july_8') — falls back to the filename."""
+    a = r.get("a") or {}
+    return day_range_label(a.get("date_min"), a.get("date_max")) or out_base(r["name"])
 
 
 # ---- Batch summary ----
@@ -138,14 +140,14 @@ if ok:
             used[base] = n + 1
             suffix = "" if n == 0 else f"_{n+1}"
             folder = f"{base}{suffix}"
-            fname = f"CyberSource_Auth_Analysis_{base}{suffix}.xlsx"
+            fname = f"cybersource_analysis_{base}{suffix}.xlsx"
             z.writestr(f"{folder}/{fname}", r["xlsx"])
 
-    # name the zip after the overall span covered
+    # name the zip after the overall span of days covered, e.g. july_1-10
     spans = [r["a"]["date_min"] for r in ok if r["a"].get("date_min")] + \
             [r["a"]["date_max"] for r in ok if r["a"].get("date_max")]
-    zip_label = date_label(min(spans), max(spans)) if spans else None
-    zip_name = f"CyberSource_Auth_Analyses_{zip_label}.zip" if zip_label else "cybersource_analyses.zip"
+    zip_label = day_range_label(min(spans), max(spans)) if spans else None
+    zip_name = f"cybersource_analysis_{zip_label}.zip" if zip_label else "cybersource_analyses.zip"
 
     st.download_button(
         f"Download all {len(ok)} workbook(s) as ZIP",
@@ -154,8 +156,9 @@ if ok:
         mime="application/zip",
         type="primary",
     )
-    st.caption(f"Each report lands in its own subdirectory named by its date range — e.g. "
-               f"`{result_label(ok[0])}/CyberSource_Auth_Analysis_{result_label(ok[0])}.xlsx`")
+    st.caption(f"Each report lands in its own subdirectory named by its day — e.g. "
+               f"`{result_label(ok[0])}/cybersource_analysis_{result_label(ok[0])}.xlsx`. "
+               f"The ZIP is named for the whole span: `{zip_name}`")
 
 # ---- Per-file preview + individual download ----
 if ok:
@@ -203,6 +206,6 @@ if ok:
     st.download_button(
         "Download this workbook (.xlsx)",
         data=r["xlsx"],
-        file_name=f"CyberSource_Auth_Analysis_{result_label(r)}.xlsx",
+        file_name=f"cybersource_analysis_{result_label(r)}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
