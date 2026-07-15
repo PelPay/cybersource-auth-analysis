@@ -30,6 +30,8 @@ KNOWN_COMMA_MSGS = [
     "Negative CAM, dCVV, iCVV, or CVV results",
     "We encountered a Payer Authentication problem: Transaction Lookup Not Successful, Check Transaction Id",
     "Lost card, pick up (fraud account)",
+    "Stolen card, pick up (fraud account)",
+    "Pick-up card, special condition(not lost/stolen)",
 ]
 _SENT = "\x01"
 
