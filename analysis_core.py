@@ -32,6 +32,7 @@ KNOWN_COMMA_MSGS = [
     "Lost card, pick up (fraud account)",
     "Stolen card, pick up (fraud account)",
     "Pick-up card, special condition(not lost/stolen)",
+    "Payment processor error Request has timed out, transaction not sent to Processor",
 ]
 _SENT = "\x01"
 
