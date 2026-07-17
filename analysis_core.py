@@ -111,6 +111,59 @@ def _parse_msg(raw):
     return [p.replace(_SENT, ",") for p in s.split(",")]
 
 
+def _auto_heal_msg(raw, pattern):
+    """Rebuild ics_rmsg into `len(pattern)` segments using a reliable presence
+    pattern (from ics_rcode / ics_rflag, which never contain internal commas).
+
+    pattern[i] is True where position i should carry a message. Empty positions
+    consume one blank token; each run of message positions consumes the matching
+    run of non-empty tokens — and when a single message position spans several
+    tokens (a description with internal commas), they're rejoined with commas.
+    Returns the healed list, or None if it can't be resolved unambiguously.
+    """
+    toks = (raw or "").split(",")
+    N = len(pattern)
+    result, ti, i = [], 0, 0
+    while i < N:
+        if not pattern[i]:                      # blank position -> one empty token
+            if ti < len(toks) and toks[ti].strip() == "":
+                result.append(""); ti += 1; i += 1
+                continue
+            return None
+        j = i                                   # length of this run of message positions
+        while j < N and pattern[j]:
+            j += 1
+        L = j - i
+        block = []                              # consecutive non-empty tokens
+        while ti < len(toks) and toks[ti].strip() != "":
+            block.append(toks[ti]); ti += 1
+        if len(block) == L:                     # one token per position
+            result.extend(block)
+        elif L == 1 and block:                  # one message split by internal commas
+            result.append(",".join(block))
+        else:                                   # adjacent messages + extra commas: ambiguous
+            return None
+        i = j
+    if len(result) != N or any(t.strip() for t in toks[ti:]):
+        return None
+    return result
+
+
+def _align_rmsg(raw, rcode, rflag, N):
+    """Return ics_rmsg as N aligned segments. Tries the known-message fast path,
+    then auto-heals against the rcode / rflag presence pattern. Falls back to the
+    naive split (which the caller then flags) only if nothing resolves."""
+    fast = _parse_msg(raw)
+    if len(fast) == N:
+        return fast
+    for anchor in (rcode, rflag):
+        if len(anchor) == N:
+            healed = _auto_heal_msg(raw, [bool(x.strip()) for x in anchor])
+            if healed and len(healed) == N:
+                return healed
+    return fast
+
+
 def _rows_from_xlsx(data):
     """Read the first worksheet of an .xlsx into a list of string-cell rows."""
     wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
@@ -190,7 +243,8 @@ def analyze(idx, rows):
         row = rows[auth_row]
         apps = _split_apps(row[C_APP]); N = len(apps)
         pos = apps.index("ics_auth")
-        rcode = _split_plain(row[C_RC]); rflag = _split_plain(row[C_RF]); rmsg = _parse_msg(row[C_RM])
+        rcode = _split_plain(row[C_RC]); rflag = _split_plain(row[C_RF])
+        rmsg = _align_rmsg(row[C_RM], rcode, rflag, N)
         if not (len(rcode) == N and len(rflag) == N and len(rmsg) == N):
             align_fail.append({"ref": ref, "N": N, "rcode": len(rcode),
                                "rflag": len(rflag), "rmsg": len(rmsg), "raw_rmsg": row[C_RM]})

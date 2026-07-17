@@ -39,9 +39,12 @@ An `.xlsx` with two sheets:
    position* `ics_auth` occupies in the comma-separated `ics_applications` list,
    using `ics_rcode` / `ics_rflag` / `ics_rmsg`.
 4. `ics_rmsg` values that contain internal commas (e.g. *"Lost card, pick up
-   (fraud account)"*) are protected before splitting so a description is never
-   torn across positions. Every row's message count is validated against
-   `ics_rcode`.
+   (fraud account)"*) would otherwise be torn across positions. These are
+   **auto-healed**: since `ics_rcode` / `ics_rflag` never contain internal commas,
+   they give a reliable "which positions have a message" pattern, and `ics_rmsg`
+   is rebuilt to match it — so new comma-bearing messages align automatically with
+   no hardcoded list to maintain. Anything genuinely ambiguous is flagged, never
+   guessed.
 
 ## Reconciliation
 
