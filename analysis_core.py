@@ -202,15 +202,19 @@ def load_rows(source):
     else:                                            # CSV / plain text
         all_rows = _rows_from_csv_text(b.decode("utf-8-sig", errors="replace"))
 
-    header_i = None
-    for i, r in enumerate(all_rows[:15]):
-        low = [c.strip().lower() for c in r]
-        if "merchant_ref_number" in low and "ics_applications" in low:
-            header_i = i
-            break
-    if header_i is None:
-        raise ValueError("Could not find a header row containing "
-                         "merchant_ref_number and ics_applications.")
+    # Identify the real header row (skipping any metadata rows) as the row that
+    # contains the most of the expected CyberSource columns.
+    low_required = [c.lower() for c in REQUIRED_COLS]
+    header_i, best = None, 0
+    for i, r in enumerate(all_rows[:20]):
+        cells = {str(c).strip().lower() for c in r if str(c).strip()}
+        score = sum(1 for c in low_required if c in cells)
+        if score > best:
+            best, header_i = score, i
+    if header_i is None or best < 3:
+        raise ValueError("Could not find a header row with the expected CyberSource "
+                         "columns (merchant_ref_number, merchant_id, ics_applications, "
+                         "ics_rcode, ics_rflag, ics_rmsg).")
 
     header = all_rows[header_i]
     idx = {h: i for i, h in enumerate(header)}
